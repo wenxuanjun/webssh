@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "serve": "rspack serve",
+    "build": "rspack build"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^1.3.7",
+    "@rspack/core": "^1.3.7",
+    "@wasm-tool/wasm-pack-plugin": "1.5.0",
+    "wasm-pack": "^0.13.1",
+    "ws": "^8.18.1"
+  }
+}

@@ -1,0 +1,36 @@
+[package]
+name = "webssh"
+version = "0.1.0"
+publish = false
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+panic = "abort"
+codegen-units = 1
+
+[dependencies]
+anyhow = "1.0.71"
+console_error_panic_hook = "0.1.7"
+russh = "0.52.0"
+tokio = { version = "1.44.2", features = ["io-util"] }
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+ws_stream_wasm = { version = "0.7.4", features = ["tokio_io"] }
+web-time = "1.1.0"
+softbuffer = { version = "0.4.6", default-features = false }
+web-log = "1.0.1"
+
+[dependencies.os-terminal]
+version = "0.6.8"
+default-features = false
+features = ["truetype"]
+
+[dependencies.winit]
+features = ["rwh_06"]
+version = "0.30.9"
+default-features = false
