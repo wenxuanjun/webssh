@@ -36,6 +36,4 @@ Finally start the development server:
 pnpm serve
 ```
 
-## Tips
-
 If you encounter an error like `Rust compilation` along with `invalid type: sequence, expected a string at line 5 column 11`, do not worry it is [`wasm-pack`'bug](https://github.com/rustwasm/wasm-pack/issues/1420). Just force stop the command and try again.
