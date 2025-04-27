@@ -333,6 +333,9 @@ impl ApplicationHandler for App {
 use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 
+// This code is derived from the winit project (https://github.com/rust-windowing/winit),
+// originally from src/platform_impl/windows/keyboard.rs.
+// Licensed under Apache 2.0 and MIT.
 fn physicalkey_to_scancode(physical_key: PhysicalKey) -> Option<u32> {
     let PhysicalKey::Code(code) = physical_key else {
         return None;
