@@ -6,6 +6,11 @@ A pure wasm ssh client with `russh` and `os-terminal`.
 
 ![](screenshot.png)
 
+## Features
+
+- SSH client on the browser (no secrets passed to the server, safe without tls)
+- No stuck and responsive on large output
+
 ## Usage
 
 Install dependencies first:
@@ -22,7 +27,7 @@ You can use the provided `wsrelay.js`. Set `WS_HOST`, `WS_PORT`, `TCP_HOST`, `TC
 node wsrelay.js
 ```
 
-Or use some other proxy you like like `websockify` or `wstcp`:
+Or use some other proxy you prefer like `websockify` or `wstcp`:
 
 ```bash
 wstcp 127.0.0.1:22 --bind-addr 0.0.0.0:19198 

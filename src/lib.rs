@@ -1,8 +1,7 @@
-use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use os_terminal::font::TrueTypeFont;
 use os_terminal::{DrawTarget, MouseInput, Rgb, Terminal};
@@ -22,16 +21,16 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use ws_stream_wasm::WsMeta;
 
 const DISPLAY_SIZE: (usize, usize) = (1024, 768);
-const WEBSOCKET_ADDRESS: &str = "ws://192.168.0.1:19198";
-const SSH_USERNAME: &str = "user";
-const SSH_PASSWORD: &str = "password";
 
 #[wasm_bindgen(start)]
-pub async fn run() {
+fn init() {
     console_error_panic_hook::set_once();
+}
 
-    let (event_sender, event_receiver) = channel(1024);
-    let (pty_sender, pty_receiver) = channel(1024);
+#[wasm_bindgen]
+pub async fn run(ws_address: String, ssh_username: String, ssh_password: String) {
+    let (event_tx, event_rx) = channel(1024);
+    let (pty_tx, pty_rx) = channel(1024);
 
     let display = Display::default();
     let buffer = display.buffer.clone();
@@ -42,7 +41,7 @@ pub async fn run() {
     terminal.set_logger(|args| web_log::println!("Terminal: {:?}", args));
 
     terminal.set_pty_writer(Box::new(move |data| {
-        pty_sender.blocking_send(data).unwrap();
+        pty_tx.blocking_send(data).unwrap();
     }));
 
     let font_buffer = include_bytes!("../SourceCodePro.otf");
@@ -52,19 +51,27 @@ pub async fn run() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let terminal = Rc::new(RefCell::new(terminal));
+    let terminal = Arc::new(Mutex::new(terminal));
     let pending_draw = Arc::new(AtomicBool::new(true));
 
     event_loop.spawn_app(App::new(
-        event_sender,
+        event_tx,
         buffer.clone(),
         terminal.clone(),
         pending_draw.clone(),
     ));
 
-    let mut session = Session::connect(event_receiver, pty_receiver, terminal, pending_draw)
-        .await
-        .unwrap();
+    let mut session = Session::connect(
+        event_rx,
+        pty_rx,
+        terminal,
+        pending_draw,
+        ws_address,
+        ssh_username,
+        ssh_password,
+    )
+    .await
+    .unwrap();
 
     let exit_code = session.call().await.unwrap();
     println!("Exitcode: {:?}", exit_code);
@@ -73,7 +80,7 @@ pub async fn run() {
 }
 
 #[derive(Debug)]
-pub struct ClientHandler;
+struct ClientHandler;
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
@@ -86,29 +93,34 @@ impl client::Handler for ClientHandler {
     }
 }
 
-pub struct Session {
+struct Session {
     session: client::Handle<ClientHandler>,
-    event_receiver: Receiver<AppEvent>,
-    pty_receiver: Receiver<String>,
-    terminal: Rc<RefCell<Terminal<Display>>>,
+    event_rx: Receiver<AppEvent>,
+    pty_rx: Receiver<String>,
+    terminal: Arc<Mutex<Terminal<Display>>>,
     pending_draw: Arc<AtomicBool>,
 }
 
 impl Session {
     async fn connect(
-        event_receiver: Receiver<AppEvent>,
-        pty_receiver: Receiver<String>,
-        terminal: Rc<RefCell<Terminal<Display>>>,
+        event_rx: Receiver<AppEvent>,
+        pty_rx: Receiver<String>,
+        terminal: Arc<Mutex<Terminal<Display>>>,
         pending_draw: Arc<AtomicBool>,
+        ws_address: String,
+        ssh_username: String,
+        ssh_password: String,
     ) -> Result<Self> {
-        let config = Arc::new(client::Config::default());
+        let (_, stream) = WsMeta::connect(ws_address, None).await?;
 
-        let (_, stream) = WsMeta::connect(WEBSOCKET_ADDRESS, None).await?;
-
-        let mut session = client::connect_stream(config, stream.into_io(), ClientHandler).await?;
+        let mut session = client::connect_stream(
+            Arc::new(client::Config::default()),
+            stream.into_io(),
+            ClientHandler
+        ).await?;
 
         let auth_ressult = session
-            .authenticate_password(SSH_USERNAME, SSH_PASSWORD)
+            .authenticate_password(ssh_username, ssh_password)
             .await?;
 
         if !auth_ressult.success() {
@@ -117,8 +129,8 @@ impl Session {
 
         Ok(Self {
             session,
-            event_receiver,
-            pty_receiver,
+            event_rx,
+            pty_rx,
             terminal,
             pending_draw,
         })
@@ -128,39 +140,35 @@ impl Session {
         let mut channel = self.session.channel_open_session().await?;
 
         let (rows, columns) = {
-            let term = self.terminal.borrow();
+            let term = self.terminal.lock().unwrap();
             (term.rows() as u32, term.columns() as u32)
         };
 
         channel
             .request_pty(false, "xterm-256color", columns, rows, 0, 0, &[])
             .await?;
-
         channel.request_shell(true).await?;
 
         let exit_status = loop {
             tokio::select! {
-                Some(event) = self.event_receiver.recv() => {
-                    let mut terminal = self.terminal.borrow_mut();
+                Some(event) = self.event_rx.recv() => {
+                    let mut terminal = self.terminal.lock().unwrap();
                     match event {
-                        AppEvent::Keyboard(byte) => {
-                            terminal.handle_keyboard(byte);
-                        }
-                        AppEvent::Mouse(mouse) => {
-                            terminal.handle_mouse(mouse);
-                        }
+                        AppEvent::Keyboard(byte) => terminal.handle_keyboard(byte),
+                        AppEvent::Mouse(mouse) => terminal.handle_mouse(mouse),
                     }
-                    if self.pty_receiver.is_empty() {
+                    drop(terminal);
+
+                    if let Some(pty) = self.pty_rx.try_recv().ok() {
+                        channel.data(pty.as_bytes()).await?;
+                    } else {
                         self.pending_draw.store(true, Ordering::Relaxed);
                     }
-                }
-                Some(pty) = self.pty_receiver.recv() => {
-                    channel.data(pty.as_bytes()).await?;
                 }
                 Some(msg) = channel.wait() => {
                     match msg {
                         ChannelMsg::Data { ref data } => {
-                            self.terminal.borrow_mut().process(data);
+                            self.terminal.lock().unwrap().process(data);
                             self.pending_draw.store(true, Ordering::Relaxed);
                         }
                         ChannelMsg::ExitStatus { exit_status } => {
@@ -169,6 +177,9 @@ impl Session {
                         _ => {}
                     }
                 },
+                Some(pty) = self.pty_rx.recv() => {
+                    channel.data(pty.as_bytes()).await?;
+                }
             }
         };
 
@@ -186,16 +197,19 @@ impl Session {
 struct Display {
     width: usize,
     height: usize,
-    buffer: Rc<RefCell<Vec<u32>>>,
+    buffer: Rc<Vec<AtomicU32>>,
 }
 
 impl Default for Display {
     fn default() -> Self {
-        let buffer = vec![0u32; DISPLAY_SIZE.0 * DISPLAY_SIZE.1];
+        let buffer = (0..DISPLAY_SIZE.0 * DISPLAY_SIZE.1)
+            .map(|_| AtomicU32::new(0))
+            .collect::<Vec<_>>();
+
         Self {
             width: DISPLAY_SIZE.0,
             height: DISPLAY_SIZE.1,
-            buffer: Rc::new(RefCell::new(buffer)),
+            buffer: Rc::new(buffer),
         }
     }
 }
@@ -208,7 +222,7 @@ impl DrawTarget for Display {
     #[inline(always)]
     fn draw_pixel(&mut self, x: usize, y: usize, color: Rgb) {
         let color = (color.0 as u32) << 16 | (color.1 as u32) << 8 | color.2 as u32;
-        self.buffer.borrow_mut()[y * self.width + x] = color;
+        self.buffer[y * self.width + x].store(color, Ordering::Relaxed);
     }
 }
 
@@ -218,9 +232,9 @@ enum AppEvent {
 }
 
 struct App {
-    event_sender: Sender<AppEvent>,
-    buffer: Rc<RefCell<Vec<u32>>>,
-    terminal: Rc<RefCell<Terminal<Display>>>,
+    event_tx: Sender<AppEvent>,
+    buffer: Rc<Vec<AtomicU32>>,
+    terminal: Arc<Mutex<Terminal<Display>>>,
     window: Option<Rc<Window>>,
     surface: Option<Surface<NoDisplayHandle, NoWindowHandle>>,
     pending_draw: Arc<AtomicBool>,
@@ -228,13 +242,13 @@ struct App {
 
 impl App {
     fn new(
-        event_sender: Sender<AppEvent>,
-        buffer: Rc<RefCell<Vec<u32>>>,
-        terminal: Rc<RefCell<Terminal<Display>>>,
+        event_tx: Sender<AppEvent>,
+        buffer: Rc<Vec<AtomicU32>>,
+        terminal: Arc<Mutex<Terminal<Display>>>,
         pending_draw: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            event_sender,
+            event_tx,
             buffer,
             terminal,
             window: None,
@@ -252,8 +266,10 @@ impl ApplicationHandler for App {
 
         if let Some(surface) = self.surface.as_mut() {
             let mut surface_buffer = surface.buffer_mut().unwrap();
-            self.terminal.borrow_mut().flush();
-            surface_buffer.copy_from_slice(&self.buffer.borrow());
+            self.terminal.lock().unwrap().flush();
+            for (index, value) in self.buffer.iter().enumerate() {
+                surface_buffer[index] = value.load(Ordering::Relaxed);
+            }
             surface_buffer.present().unwrap();
         }
     }
@@ -304,7 +320,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(delta) => delta.y as f32,
                 };
                 let lines = if lines > 0.0 { 1 } else { -1 };
-                self.event_sender
+                self.event_tx
                     .blocking_send(AppEvent::Mouse(MouseInput::Scroll(lines)))
                     .unwrap();
             }
@@ -315,12 +331,12 @@ impl ApplicationHandler for App {
                         scancode += 0x80;
                     }
                     if scancode >= 0xe000 {
-                        self.event_sender
+                        self.event_tx
                             .blocking_send(AppEvent::Keyboard(0xe0))
                             .unwrap();
                         scancode -= 0xe000;
                     }
-                    self.event_sender
+                    self.event_tx
                         .blocking_send(AppEvent::Keyboard(scancode as u8))
                         .unwrap();
                 }
