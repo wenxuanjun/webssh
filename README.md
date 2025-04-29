@@ -19,21 +19,13 @@ Install dependencies first:
 pnpm install
 ```
 
-To connect to ssh server, we need a websocket to tcp proxy.
+To connect to ssh server, we need a websocket-to-tcp proxy.
 
-You can use the provided `wsrelay.js`. Set `WS_HOST`, `WS_PORT`, `TCP_HOST`, `TCP_PORT`, and then run:
+You can use the provided `wsrelay.js`. Set `WS_HOST`, `WS_PORT`, and then run:
 
 ```bash
 node wsrelay.js
 ```
-
-Or use some other proxy you prefer like `websockify` or `wstcp`:
-
-```bash
-wstcp 127.0.0.1:22 --bind-addr 0.0.0.0:19198 
-```
-
-Then edit the `src/lib.rs` and set the ssh username/password and websocket address.
 
 Finally start the development server:
 
@@ -46,5 +38,6 @@ If you encounter an error like `Rust compilation` along with `invalid type: sequ
 ## TODO
 
 - [ ] Error handling
-- [ ] Support more ssh authentication methods
 - [ ] Performance improvement
+- [ ] Decent frontend
+- [ ] Support more ssh authentication methods
